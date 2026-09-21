@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>赛鸽血统环号登记站</title>
+  <style>
+    :root { --bg:#eff2f5; --panel:#fff; --ink:#1f2833; --muted:#697786; --line:#d3dce4; --accent:#315f83; --red:#9b3f35; --green:#2f6f4f; --gold:#8a6d1f; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font-family:Arial,"PingFang SC",sans-serif; }
+    header { padding:22px 28px; background:#fff; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; gap:16px; align-items:center; }
+    h1 { margin:0; font-size:26px; }
+    h2 { margin:0 0 12px; font-size:18px; }
+    h3 { margin:14px 0 8px; font-size:15px; }
+    main { display:grid; grid-template-columns:380px 1fr; gap:22px; padding:22px 28px; }
+    form,.panel,.card { background:#fff; border:1px solid var(--line); border-radius:8px; padding:16px; }
+    label { display:block; margin:10px 0 5px; color:var(--muted); font-size:13px; }
+    input,select { width:100%; border:1px solid var(--line); border-radius:6px; padding:9px; font:inherit; }
+    button { border:0; border-radius:6px; background:var(--accent); color:#fff; padding:10px 13px; font-weight:700; cursor:pointer; }
+    button.ghost { background:#fff; color:var(--accent); border:1px solid var(--accent); }
+    button.danger { background:var(--red); }
+    .toolbar { display:grid; grid-template-columns:1fr auto; gap:10px; margin-bottom:14px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:12px; }
+    .card { display:grid; gap:8px; align-content:start; }
+    .card h3 { margin:0; font-size:17px; }
+    .meta { color:var(--muted); font-size:13px; }
+    .pill { display:inline-block; border:1px solid var(--line); border-radius:999px; padding:3px 8px; font-size:12px; margin:1px 2px 1px 0; }
+    .pill.st-pending { color:var(--gold); border-color:var(--gold); }
+    .pill.st-confirmed,.pill.st-entered { color:var(--accent); border-color:var(--accent); }
+    .pill.st-effective,.pill.st-ranked { color:var(--green); border-color:var(--green); }
+    .pill.st-cancelled,.pill.st-frozen { color:var(--red); border-color:var(--red); }
+    .section { margin-top:14px; }
+    .relation { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:10px; }
+    .small { background:#f8fafb; border:1px solid var(--line); border-radius:8px; padding:10px; }
+    .row { border-top:1px solid var(--line); padding:10px 0; display:grid; gap:6px; }
+    .actions { display:flex; gap:8px; flex-wrap:wrap; }
+    .actions button { padding:6px 10px; font-size:13px; }
+    .mini { border-top:1px dashed var(--line); padding-top:8px; display:grid; gap:6px; }
+    .mini label { margin-top:2px; }
+    .rev { background:#f8fafb; border:1px solid var(--line); border-radius:6px; padding:8px; font-size:12px; color:var(--muted); }
+    @media (max-width:900px){ header{display:block;padding:18px 16px;} main{grid-template-columns:1fr;padding:16px;} .relation{grid-template-columns:1fr;} }
+  </style>
+</head>
+<body>
+  <header>
+    <div><h1>赛鸽血统环号登记站</h1><div class="meta">档案、血统、转让生效与权益台</div></div>
+    <button id="reload">刷新</button>
+  </header>
+  <main>
+    <form id="form">
+      <h2>创建鸽只档案</h2>
+      <label>足环号</label><input name="ringNo" required>
+      <label>鸽主</label><input name="owner" required>
+      <label>父鸽足环号</label><input name="fatherRing">
+      <label>母鸽足环号</label><input name="motherRing">
+      <label>羽色</label><input name="color" required>
+      <label>出生棚号</label><input name="loft" required>
+      <button>保存档案</button>
+    </form>
+    <section>
+      <div class="toolbar"><input id="search" placeholder="输入足环号查询血统与权益履历"><button id="searchBtn">查询</button></div>
+      <div class="panel" id="detail"></div>
+      <div class="section grid" id="cards"></div>
+    </section>
+  </main>
+  <script>
+    const form = document.querySelector("#form");
+    const cards = document.querySelector("#cards");
+    const detail = document.querySelector("#detail");
+    const search = document.querySelector("#search");
+    const today = new Date().toISOString().slice(0, 10);
+    const tStatus = { pending: "待双方确认", confirmed: "已确认·停药期内", effective: "已生效", cancelled: "已撤销" };
+    const eStatus = { entered: "已报名", frozen: "已冻结", ranked: "已产生名次" };
+    let pigeons = [];
+    let currentRing = null;
+
+    const esc = value => String(value ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+    const byData = (name, value) => document.querySelector(`[data-${name}="${CSS.escape(value)}"]`);
+
+    async function api(path, options) {
+      const res = await fetch(path, options && options.body ? { ...options, headers: { "Content-Type": "application/json" } } : options);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || data.error || "请求失败");
+      return data;
+    }
+    async function run(action) {
+      try { await action(); } catch (error) { alert(error.message); }
+      await load();
+    }
+    async function load() {
+      try {
+        pigeons = await api("/api/pigeons");
+        renderCards();
+        if (currentRing) await openLedger(currentRing);
+        else renderDetail(null);
+      } catch (error) { alert(error.message); }
+    }
+
+    function renderCards() {
+      cards.innerHTML = pigeons.map(p => `
+        <article class="card">
+          <h3>${esc(p.ringNo)}</h3>
+          <div><span class="pill">当前归属：${esc(p.currentOwner)}</span>${p.currentOwner !== p.owner ? `<span class="meta">原登记 ${esc(p.owner)}</span>` : ""}</div>
+          <div class="meta">${esc(p.color)} · ${esc(p.loft)}</div>
+          <div class="meta">父：${esc(p.fatherRing || "未登记")}　母：${esc(p.motherRing || "未登记")}</div>
+          <div class="meta">报名：有效 ${p.entryStats.entered} · 冻结 ${p.entryStats.frozen} · 名次 ${p.entryStats.ranked}</div>
+          ${p.pendingTransfers.length ? `<div class="meta">进行中的转让：${p.pendingTransfers.map(t => `${esc(t.id)} → ${esc(t.to)}（${tStatus[t.status]}）`).join("、")}</div>` : ""}
+          <div class="mini">
+            <label>转让登记（双方确认且过停药期后生效）</label>
+            <input data-to="${esc(p.ringNo)}" placeholder="受让人">
+            <input data-hd="${esc(p.ringNo)}" type="date" value="${today}" title="交接日">
+            <input data-vn="${esc(p.ringNo)}" placeholder="凭证号">
+            <input data-wd="${esc(p.ringNo)}" type="number" min="0" max="365" value="7" title="停药期（天）">
+            <button data-transfer="${esc(p.ringNo)}">保存转让</button>
+          </div>
+          <div class="mini">
+            <label>比赛报名</label>
+            <input data-ev="${esc(p.ringNo)}" placeholder="赛事名称">
+            <input data-di="${esc(p.ringNo)}" type="number" min="0" placeholder="距离（公里）">
+            <input data-rd="${esc(p.ringNo)}" type="date" value="${today}" title="比赛日">
+            <button data-entry="${esc(p.ringNo)}">保存报名</button>
+          </div>
+          <button class="ghost" data-ledger="${esc(p.ringNo)}">履历 / 权益台</button>
+        </article>`).join("");
+      document.querySelectorAll("[data-transfer]").forEach(btn => btn.onclick = () => run(async () => {
+        const ringNo = btn.dataset.transfer;
+        await api(`/api/pigeons/${encodeURIComponent(ringNo)}/transfers`, { method: "POST", body: JSON.stringify({
+          to: byData("to", ringNo).value,
+          handoverDate: byData("hd", ringNo).value,
+          voucherNo: byData("vn", ringNo).value,
+          withdrawalDays: Number(byData("wd", ringNo).value || 7)
+        }) });
+      }));
+      document.querySelectorAll("[data-entry]").forEach(btn => btn.onclick = () => run(async () => {
+        const ringNo = btn.dataset.entry;
+        await api(`/api/pigeons/${encodeURIComponent(ringNo)}/entries`, { method: "POST", body: JSON.stringify({
+          event: byData("ev", ringNo).value,
+          distance: Number(byData("di", ringNo).value || 0),
+          raceDate: byData("rd", ringNo).value
+        }) });
+      }));
+      document.querySelectorAll("[data-ledger]").forEach(btn => btn.onclick = () => openLedger(btn.dataset.ledger));
+    }
+
+    async function openLedger(ringNo) {
+      currentRing = ringNo;
+      try {
+        const [data, relation] = await Promise.all([
+          api(`/api/pigeons/${encodeURIComponent(ringNo)}/ledger`),
+          api(`/api/pigeons/${encodeURIComponent(ringNo)}/relation`)
+        ]);
+        renderDetail(data, relation);
+      } catch (error) {
+        detail.innerHTML = `<h2>血统与权益台</h2><p class="meta">${esc(error.message)}</p>`;
+      }
+    }
+
+    function renderDetail(data, relation) {
+      if (!data) {
+        detail.innerHTML = '<h2>血统与权益台</h2><p class="meta">输入足环号查询，或在卡片上点「履历 / 权益台」。</p>';
+        return;
+      }
+      const p = data.pigeon;
+      const intervals = data.intervals.map(i =>
+        `<span class="pill">${esc(i.owner)}：${i.from || "建档"} 至 ${i.to || "至今"}</span>`).join("");
+      const transfers = data.transfers.map(t => {
+        const revs = t.revisions.map((r, i) =>
+          `<div class="rev">留档 ${i + 1} · ${esc(r.changedAt.slice(0, 10))} · ${esc(r.reason)}：交接日 ${esc(r.snapshot.handoverDate)}、凭证号 ${esc(r.snapshot.voucherNo)}、停药期 ${r.snapshot.withdrawalDays} 天、生效日 ${esc(r.snapshot.effectiveDate || "未生效")}</div>`).join("");
+        const acts = [];
+        if (!t.cancelledAt) {
+          if (!t.confirmations.from) acts.push(`<button data-confirm="${t.id}" data-role="from">原鸽主确认</button>`);
+          if (!t.confirmations.to) acts.push(`<button data-confirm="${t.id}" data-role="to">受让人确认</button>`);
+          acts.push(`<button class="ghost" data-correct="${t.id}">更正</button>`);
+          acts.push(`<button class="danger" data-cancel="${t.id}">撤销</button>`);
+        }
+        return `<div class="row">
+          <div><b>${esc(t.id)}</b>　${esc(t.from)} → ${esc(t.to)}　<span class="pill st-${t.status}">${tStatus[t.status]}</span></div>
+          <div class="meta">交接日 ${esc(t.handoverDate)} · 凭证号 ${esc(t.voucherNo)} · 停药期 ${t.withdrawalDays} 天 · 生效日 ${esc(t.effectiveDate || "待双方确认")}</div>
+          <div class="meta">确认：原鸽主 ${t.confirmations.from ? "✓" : "—"} / 受让人 ${t.confirmations.to ? "✓" : "—"}</div>
+          ${acts.length ? `<div class="actions">${acts.join("")}</div>` : ""}
+          ${revs}
+        </div>`;
+      }).join("") || '<p class="meta">暂无转让单。</p>';
+      const entries = data.entries.map(e => {
+        const rank = e.status === "ranked" ? ` · 第 ${e.rank} 名${e.returnTime ? " " + esc(e.returnTime) : ""} · 名次归 ${esc(e.rankOwner)}` : "";
+        const act = e.status === "entered" ? `<div class="actions"><button data-result="${e.id}">录入名次</button></div>` : "";
+        return `<div class="row">
+          <div><b>${esc(e.event)}</b>　${e.distance} 公里 · 比赛日 ${esc(e.raceDate)}　<span class="pill st-${e.status}">${eStatus[e.status]}</span></div>
+          <div class="meta">报名人 ${esc(e.entrant)}${rank}</div>
+          ${act}
+        </div>`;
+      }).join("") || '<p class="meta">暂无报名记录。</p>';
+      detail.innerHTML = `
+        <h2>${esc(p.ringNo)} 血统与权益台</h2>
+        <div class="relation">
+          <div class="small"><b>父鸽</b><br>${esc(relation.father?.ringNo || p.fatherRing || "未登记")}</div>
+          <div class="small"><b>本鸽</b><br>当前归属 ${esc(data.currentOwner)} · ${esc(p.color)}</div>
+          <div class="small"><b>母鸽</b><br>${esc(relation.mother?.ringNo || p.motherRing || "未登记")}</div>
+        </div>
+        <div class="meta">子代：${relation.children.map(c => esc(c.ringNo)).join("、") || "暂无"}</div>
+        <h3>归属区间（截至 ${esc(data.today)}）</h3>
+        <div>${intervals}</div>
+        <h3>转让单</h3>${transfers}
+        <h3>报名与名次</h3>${entries}`;
+      detail.querySelectorAll("[data-confirm]").forEach(btn => btn.onclick = () => run(async () => {
+        await api(`/api/transfers/${btn.dataset.confirm}/confirm`, { method: "POST", body: JSON.stringify({ role: btn.dataset.role }) });
+      }));
+      detail.querySelectorAll("[data-correct]").forEach(btn => btn.onclick = () => run(async () => {
+        const handoverDate = prompt("新的交接日（YYYY-MM-DD，留空不变）");
+        const voucherNo = prompt("新的凭证号（留空不变）");
+        const patch = {};
+        if (handoverDate) patch.handoverDate = handoverDate;
+        if (voucherNo) patch.voucherNo = voucherNo;
+        if (!Object.keys(patch).length) return;
+        await api(`/api/transfers/${btn.dataset.correct}`, { method: "PATCH", body: JSON.stringify(patch) });
+      }));
+      detail.querySelectorAll("[data-cancel]").forEach(btn => btn.onclick = () => run(async () => {
+        if (!confirm("确认撤销该转让单？旧版本将留档，后续报名资格按时间顺序重算。")) return;
+        await api(`/api/transfers/${btn.dataset.cancel}/cancel`, { method: "POST" });
+      }));
+      detail.querySelectorAll("[data-result]").forEach(btn => btn.onclick = () => run(async () => {
+        const rank = prompt("名次（正整数）");
+        if (!rank) return;
+        const returnTime = prompt("归巢时间（可空）") || "";
+        await api(`/api/entries/${btn.dataset.result}/result`, { method: "POST", body: JSON.stringify({ rank: Number(rank), returnTime }) });
+      }));
+    }
+
+    document.querySelector("#searchBtn").onclick = () => openLedger(search.value.trim());
+    document.querySelector("#reload").onclick = load;
+    form.onsubmit = event => {
+      event.preventDefault();
+      run(async () => {
+        await api("/api/pigeons", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(form).entries())) });
+        form.reset();
+      });
+    };
+    load();
+  </script>
+</body>
+</html>
